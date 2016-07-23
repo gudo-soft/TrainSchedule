@@ -1,0 +1,1001 @@
+<html>
+<head>
+<title>東海道・山陽新幹線　列車運行図表</title>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<!--
+<script src="http://d3js.org/d3.v3.min.js" charset="utf-8"></script><!--ライブラリd3.jsを読み込み-->
+<!--
+<script src="http://d3js.org/queue.v1.min.js"></script> // ※1
+-->
+<link rel="shortcut icon" href="./favicon.ico" /> 
+<script type="text/javascript" src="glMatrix.js"></script>
+<script type="text/javascript" src="json_parse_station.js"></script>
+<script type="text/javascript" src="json_parse_timetable.js"></script>
+<!---
+//------------ shader-fs ----------------------------
+---->
+<script id="shader-fs" type="x-shader/x-fragment">    
+    precision mediump float;
+
+    varying vec4 vColor;
+
+    void main(void) {
+            gl_FragColor = vColor;
+    }
+</script>
+<!---
+//-------------- shader-vs -------------------------
+---->
+<script id="shader-vs" type="x-shader/x-vertex">
+    attribute vec3 aVertexPosition;
+    attribute vec4 aVertexColor;
+
+    uniform mat4 uMVMatrix;
+    uniform mat4 uPMatrix;
+    varying vec4 vColor;
+
+    void main(void) {
+        gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0);
+        vColor = aVertexColor;
+    }
+</script>
+<!---
+//------------------  initGL ------------------------------
+---->
+<script type="text/javascript">
+
+    var gl;
+    function initGL(canvas) {
+        try {
+            gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+            gl.viewportWidth = canvas.width;
+            gl.viewportHeight = canvas.height;      // alert(gl.viewportHeight);
+        } catch (e) {
+        }
+        if (!gl) {
+            alert("Could not initialise WebGL, sorry :-(");
+        }
+    }
+//------------------  getShader ------------------------------
+    function getShader(gl, id) {
+        var shaderScript = document.getElementById(id);
+        if (!shaderScript) {
+            return null;
+        }
+
+        var str = "";
+        var k = shaderScript.firstChild;
+        while (k) {
+            if (k.nodeType == 3) {
+                str += k.textContent;
+            }
+            k = k.nextSibling;
+        }
+
+        var shader;
+        if (shaderScript.type == "x-shader/x-fragment") {
+            shader = gl.createShader(gl.FRAGMENT_SHADER);
+        } else if (shaderScript.type == "x-shader/x-vertex") {
+            shader = gl.createShader(gl.VERTEX_SHADER);
+        } else {
+            return null;
+        }
+
+        gl.shaderSource(shader, str);
+        gl.compileShader(shader);
+
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            alert(gl.getShaderInfoLog(shader));
+            return null;
+        }
+
+        return shader;
+    }
+
+    var shaderProgram;
+//------------------  initShader ------------------------------
+    function initShaders() {
+        var fragmentShader = getShader(gl, "shader-fs");
+        var vertexShader = getShader(gl, "shader-vs");
+
+        shaderProgram = gl.createProgram();
+        gl.attachShader(shaderProgram, vertexShader);
+        gl.attachShader(shaderProgram, fragmentShader);
+        gl.linkProgram(shaderProgram);
+
+        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+            alert("Could not initialise shaders");
+        }
+
+        gl.useProgram(shaderProgram);
+
+        shaderProgram.vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+        gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
+
+        shaderProgram.vertexColorAttribute = gl.getAttribLocation(shaderProgram, "aVertexColor");
+        gl.enableVertexAttribArray(shaderProgram.vertexColorAttribute);
+
+
+        shaderProgram.pMatrixUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
+        shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+    }
+
+
+    var mvMatrix = mat4.create();
+    var pMatrix = mat4.create();
+
+    function setMatrixUniforms() {
+        gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
+        gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+    }
+
+    var triangleVertexPositionBuffer;
+    var triangleVertexColorBuffer;
+    var squareVertexPositionBuffer;
+    var squareVertexColorBuffer;
+//------------------  initBuffers ------------------------------
+    function initBuffers() {
+        triangleVertexPositionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, triangleVertexPositionBuffer);
+        var vertices = [
+            -0.5,  0.0,  0.0,          // 黒
+             0.5,  0.0,  0.0,
+            -0.5,  0.0,  0.0,          // 緑　
+             0.5,  0.0,  0.0,
+            -0.5,  0.0,  0.0,          // のぞみ
+             0.5,  0.0,  0.0,
+            -0.5,  0.0,  0.0,          // ひかり
+             0.5,  0.0,  0.0,
+            -0.5,  0.0,  0.0,          // こだま
+             0.5,  0.0,  0.0,
+            -0.5,  0.0,  0.0,          // みずほ
+             0.5,  0.0,  0.0,
+            -0.5,  0.0,  0.0,          // さくら
+             0.5,  0.0,  0.0,
+            -0.5,  0.0,  0.0,          // 回送
+             0.5,  0.0,  0.0
+        ];
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+        triangleVertexPositionBuffer.itemSize = 3;
+        triangleVertexPositionBuffer.numItems = 3;
+
+        triangleVertexColorBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, triangleVertexColorBuffer);
+        var colors = [
+            0.0, 0.0, 0.0, 1.0,      // 黒
+            0.0, 0.0, 0.0, 1.0,　　　　　　　　　
+            0.0, 1.0, 0.0, 1.0,      // 緑
+            0.0, 1.0, 0.0, 1.0,
+            0.9569 , 0.6157 , 0.0745 , 1.0,  // のぞみ
+            0.9569 , 0.6157 , 0.0745 , 1.0, 
+            1.0, 0.0, 0.0, 1.0,              // ひかり
+            1.0, 0.0, 0.0, 1.0,
+            0.0, 0.0, 1.0, 1.0,              // こだま
+            0.0, 0.0, 1.0, 1.0,
+            0.9373 , 0.3882 , 0.0235 , 1.0,  // みずほ
+            0.9373 , 0.3882 , 0.0235 , 1.0, 
+            0.9647 , 0.5020 , 0.7765 , 1.0,  // さくら
+            0.9647 , 0.5020 , 0.7765 , 1.0,
+            0.0, 0.0, 0.0, 1.0,                // 回送
+            0.0, 0.0, 0.0, 1.0
+         ];
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+        triangleVertexColorBuffer.itemSize = 4;
+        triangleVertexColorBuffer.numItems = 2;
+
+        squareVertexPositionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, squareVertexPositionBuffer);
+        vertices = [
+             1.0,  1.0,  0.0,
+            -1.0,  1.0,  0.0,
+             1.0, -1.0,  0.0,
+            -1.0, -1.0,  0.0
+        ];
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+        squareVertexPositionBuffer.itemSize = 3;
+        squareVertexPositionBuffer.numItems = 4;
+
+        squareVertexColorBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, squareVertexColorBuffer);
+        colors = []
+       for (var i=0; i < 4; i++) {
+         colors = colors.concat([0.5, 0.5, 1.0, 1.0]);
+        }
+       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+       squareVertexColorBuffer.itemSize = 4;
+       squareVertexColorBuffer.numItems = 4;
+
+
+    }
+//------------------  drawInit ------------------------------
+    function drawInit( ) {
+           
+        gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        mat4.perspective(45, gl.viewportWidth / gl.viewportHeight, 0.01, 100.0, pMatrix);
+      }
+   
+   var z=-0.5;
+   var mouseX_save= 0.0;
+   var mouseY_save= 0.0;
+   var distanceX= 0.0;
+   var distanceY= 0.0;
+   var PURSUIT_RATE = 0.3;  // 収束率
+//------------------  drawLine ------------------------------
+    function drawLine( x1, y1, x2, y2 ,color, line_width ) {
+             x1 = x1 + distanceX;
+             x2 = x2 + distanceX;             
+             y1 = y1 + distanceY;
+             y2 = y2 + distanceY;
+                                // alert(y1);
+            var xs1 = 0.0;
+            var xs2 = gl.viewportWidth;       // alert(xs2);
+            var ys1 = 0.0;
+            var ys2 = gl.viewportHeight;      // alert(ys2);
+            var xp1 = x1/(xs2 - xs1);         //   alert(xp1);
+            var xp2 = x2/(xs2 - xs1);         //    alert(xp2);
+            var yp1 = y1/(ys2 - ys1); 
+            var yp2 = y2/(ys2 - ys1);         //    alert(yp2); 
+            var baseLinelength = 0.5;
+        　  var lineLength = Math.sqrt((xp2 - xp1) * (xp2 - xp1) + (yp2 - yp1) * (yp2 - yp1));  
+                                                               //    alert(lineLength);
+        　　var sizeX = lineLength / baseLinelength;            //    alert(sizeX);
+
+           var theta = Math.asin( (yp2 - yp1)/ lineLength);        //  alert(yp1);
+             
+           var mx = ((x2 + x1)- (xs2 + xs1))/ (xs2 -xs1);   //  alert(mx);
+           var my = ((y2 + y1)- (ys2 + ys1))/ (ys2 -ys1);   //  alert(my); 
+          mat4.identity(mvMatrix);                  // z=-0.02;
+          mat4.translate(mvMatrix, [mx - 0.5 , -my , z]);         
+          mat4.rotate(mvMatrix, -theta , [0, 0, 1]);      // Rotate theta degrees around the Z axis
+          mat4.scale(mvMatrix, [sizeX, 0, 0]); // Scale by 200%
+      
+        gl.bindBuffer(gl.ARRAY_BUFFER, triangleVertexPositionBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, triangleVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, triangleVertexColorBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexColorAttribute, triangleVertexColorBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        setMatrixUniforms();
+        gl.lineWidth( line_width ); 
+        gl.drawArrays(gl.LINES, color, 2);
+      
+     }
+//------------------  webGLStart ------------------------------ 
+var container;
+var canvas;
+var canvas_text;
+var context;
+var mouse_X_dblclk;
+var mouse_Y_dblclk;
+var dblclk_flag;
+    function webGLStart() {
+        container = document.getElementById("canvasContainer");
+        canvas = document.getElementById("diagram_01-canvas");
+        canvas_text = document.getElementById("text_canvas");
+        context = canvas_text.getContext('2d');
+          canvas_text.width = window.innerWidth;
+　　　　　　canvas_text.height = window.innerHeight; 
+
+        setCanvasSize();
+        initGL(canvas);
+        initShaders();
+        initBuffers();
+     //   initTexture();
+
+        gl.clearColor(1.0, 1.0, 1.0, 1.0);
+        gl.enable(gl.DEPTH_TEST);
+    
+        drawInit();  // z=-1.5;
+// canvas のマウスムーブイベントに処理を登録
+   //   canvas.addEventListener('mousemove', mouseMove, true);
+       canvas_text.addEventListener('click', function(e){ // console.log("click"); 
+          //    z -= 0.1;                    //  console.log(z);
+              webGL_draw();
+              webGL_text();
+	       mouseX = e.clientX;
+		mouseY = e.clientY;
+	                                  //    console.log(mouseX , mouseY);
+	}, false);
+　　var mouse_down = 0;
+       canvas_text.addEventListener('mousedown', function(e){ // console.log("mousedown"); 
+                mouse_down = 1;
+          //    z -= 0.1;                    //  console.log(z);
+          //    webGL_draw();
+          //    webGL_text();
+	       mouseX = e.clientX;  
+		mouseY = e.clientY;  
+            if ( mouseX_save == 0 && mouseY_save == 0 ) {
+              mouseX_save = mouseX;
+              mouseY_save = mouseY;
+               }
+	                                     // console.log(mouseX_save , mouseY_save);
+	}, false);
+
+       canvas_text.addEventListener('mouseup', function(e){ // console.log("mouseup");
+                mouse_down = 0; 
+          //    z -= 0.1;                    //  console.log(z);
+          //    webGL_draw();
+          //    webGL_text();
+	       mouseX = e.clientX;
+		mouseY = e.clientY;
+              mouseX_save = 0;
+              mouseY_save = 0;
+	                                     // console.log(mouseX_save , mouseY_save);
+	}, false);
+
+        canvas_text.addEventListener('mousemove', function(e){ // console.log("mousemove");
+                
+          //    z -= 0.1;                    //  console.log(z);
+          //    webGL_draw();
+          //    webGL_text();
+             if (mouse_down ==1)  {
+	       mouseX = e.clientX;
+		mouseY = e.clientY;
+                   PURSUIT_RATE = - z;   // console.log(z , PURSUIT_RATE); 
+	       distanceX= distanceX + (mouseX - mouseX_save)*PURSUIT_RATE;
+                                      //    distanceX=distanceX*PURSUIT_RATE;
+              distanceY= distanceY + (mouseY - mouseY_save)*PURSUIT_RATE;
+                                     //    distanceY=distanceY*PURSUIT_RATE;
+                                     //      distanceX= mouseX - 600;
+                                     //      distanceY= mouseY - 300;
+              webGL_draw();
+              webGL_text();
+              mouseX_save = mouseX;
+              mouseY_save = mouseY;                             
+                           //  console.log(distanceX , mouseX,  mouseX_save); 
+                           //  console.log(distanceY , mouseY,  mouseY_save); 
+              }   
+	}, false);
+
+       
+       canvas_text.addEventListener('dblclick', function(e){ // console.log("dblclick"); 
+          //    z -= 0.1;                    //  console.log(z);
+          //    webGL_draw();
+          //    webGL_text()
+              var rect = canvas_text.getBoundingClientRect();
+	//     mouseX = e.clientX;
+	//	mouseY = e.clientY;
+              mouseX = e.clientX - rect.left;
+		mouseY = e.clientY - rect.top;
+                                           //     console.log("dblclick" , mouseX , mouseY);
+               mouse_X_dblclk = mouseX;
+               mouse_Y_dblclk = mouseY;
+               dblclk_flag = 1;     
+               webGL_draw();
+               webGL_text();
+                 
+	}, false);
+
+      canvas_text.addEventListener('DOMMouseScroll', function(e){   // console.log("DOMMouseScroll"); 
+                                //  console.log(z);
+              // webGL_draw();
+	      var wheel_delta = e.detail ? e.detail / -3 : e.wheelDelta / 120;
+                            if( wheel_delta ==1  && z > -0.15 ) { z += 0.01; }
+                            if( wheel_delta ==1  && z <= -0.15 ) { z += 0.1; }
+                            if( wheel_delta ==-1 ) { z -= 0.1; }
+                            if( z > - 0.01  ) {z=-0.01;}            
+                                                     //   console.log(z);
+              webGL_draw();
+              webGL_text();
+	       mouseX = e.clientX;
+		mouseY = e.clientY;
+	                                //      console.log(wheel_delta);
+	}, false);
+
+        canvas_text.addEventListener('mousewheel', function(e){ console.log("mousewheel"); 
+              z -= 0.5;                    //  console.log(z);
+              webGLStart();
+	
+	       mouseX = e.clientX;
+		mouseY = e.clientY;
+	                                      console.log(mouseX , mouseY);
+	}, false);
+
+  //      document.addEventListener('keyup', function(e){ console.log("keyup"); 
+   //         
+//	                                     
+//	}, false);
+
+
+       if(document.addEventListener){
+
+	// キーボードを押したときに実行されるイベント
+	document.addEventListener("keydown" , KeyDownFunc);
+
+// アタッチイベントに対応している
+}else if(document.attachEvent){
+
+	// キーボードを押したときに実行されるイベント
+	document.attachEvent("onkeydown" , KeyDownFunc);
+
+ }
+}   //END of webGLStart()
+//---------------------------------------------------------------------
+function KeyDownFunc(e){
+
+	// ------------------------------------------------------------
+	// 入力情報を取得
+	// ------------------------------------------------------------
+	// キーコード
+	var key_code = e.keyCode;
+	// Shiftキーの押下状態
+	var shift_key = e.shiftKey;
+	// Ctrlキーの押下状態
+	var ctrl_key = e.ctrlKey;
+	// Altキーの押下状態
+	var alt_key = e.altKey;
+
+	// ------------------------------------------------------------
+	// 出力テスト
+	// ------------------------------------------------------------
+	                             // console.log("code:" + key_code);
+	                             // console.log("shift:" + shift_key);
+	                             // console.log("ctrl" + ctrl_key);
+	                             // console.log("alt:" + alt_key);
+      if(key_code == 33)  { 
+           if ( z > -0.15 ) { z += 0.01; } 
+           if ( z <= -0.15 ) { z += 0.1; }
+           if( z > - 0.01  ) {z=-0.01;}  
+         webGL_draw();
+         webGL_text();  
+        }
+      if(key_code == 34)  { 
+           if ( z > -0.15 ) { z -= 0.01; } 
+           if ( z <= -0.15 ) { z -= 0.1; }
+           if( z > - 0.01  ) {z=-0.01;}  
+         webGL_draw();
+         webGL_text();  
+        }
+      if(key_code == 39)  {     // 右矢印 
+         if ( z > -0.4 )  { distanceX -=10; }  
+         if ( z <= -0.4 ) { distanceX -=100;}
+         webGL_draw();
+         webGL_text();  
+        }
+      if(key_code == 37)  {     // 左矢印 
+         if ( z > -0.4 )  { distanceX +=10; }  
+         if ( z <= -0.4 ) { distanceX +=100;} 
+         webGL_draw();
+         webGL_text();  
+        }
+      if(key_code == 38)  {     // 上矢印　　
+         if ( z > -0.4 )  { distanceY +=10; }  
+         if ( z <= -0.4 ) { distanceY +=100;}
+         webGL_draw();
+         webGL_text();  
+        }
+      if(key_code == 40)  {     // 下矢印 
+         if ( z > -0.4 )  { distanceY -=10; }  
+         if ( z <= -0.4 ) { distanceY -=100;}
+         webGL_draw();
+         webGL_text();  
+        }
+}
+//--------------- WebGL_draw -----------------------------------
+  function  webGL_draw() {
+     // Initialize valuables
+     var x1 = 0.0;
+     var y1 = 0.0;
+     var x2 = 0.0;
+     var y2 = 0.0;
+     var color = 0;
+     var train_exist = 0;
+     var line_width = 0.0;
+         
+           context.clearRect(0,0,canvas_text.width,canvas_text.height);
+        
+       if ( z > -0.4 ) { line_width = 3.0; } else { line_width = 2.0; }
+       for (var i=6; i < 25; i++) {
+             x1 = -50 + (i-5)*100;  
+             x2 = x1; 
+             y1 = 25; 
+             y2 = 1120; 
+             color=2; 
+             drawLine( x1,  y1,  x2,  y2 , color , line_width);
+         }
+       if ( z > -0.4 ) { line_width = 2.0; } else { line_width = 1.0; }
+       for (i=6; i<24; i++) {
+         var j = 0;
+             for (j=1; j<6; ++j) {
+                  x1 = -50 + (i-5)*100+ j*100/6;  
+                  x2 = x1; 
+                  y1 = 25; 
+                  y2 = 1120; 
+                  color=2; 
+                  drawLine( x1,  y1,  x2,  y2 , color , line_width);
+              }
+        }
+    if ( z > -0.4 ) {
+      line_width = 1.0;
+      for (i=6; i<24; ++i) {
+        var j = 0;
+            for (j=0; j<6; ++j) {
+               for (var k=1; k<5; ++k) {
+                     x1 = -50+ (i-5)*100+ j*100/6 + k*100/6/5;  
+                     x2 = x1; 
+                     y1 = 25; 
+                     y2 = 1120; 
+                     color=2; 
+                     drawLine( x1,  y1,  x2,  y2 , color , line_width);
+                 }
+              }
+         } 
+      }
+       if ( z > -0.4 ) { line_width = 3.0; } else { line_width = 2.0; }
+             x1= 50;  x2= 1850;
+           //  station_data();  
+       for (var i=0; i < 39; i++) {
+            var kilo_meter_s = json_station_data.stations[i].kilo_meter;
+             var kilo_meter = parseFloat(kilo_meter_s); 
+            y1 = kilo_meter + 25;
+            y2 = kilo_meter + 25;
+            color = 2; 
+            drawLine( x1,  y1,  x2,  y2 , color , line_width);
+         }
+      
+                                                      // color=6;
+                                                      // x1 = 100; y1 = 100 ; x2 = 500; y2 = 500;      
+                                                      // drawLine( x1,  y1,  x2,  y2 , color);
+       var   x1_time = "--:--:--";
+       var   x2_time = "--:--:--";
+      if ( z > -0.4 ) { line_width = 2.0; } else { line_width = 1.0; }
+         //console.log(train_length);
+      for (var i=0; i < train_length; i++) {
+            //train_line (i);
+              var station_length = json_timetable_data.trains[i].station_time.length;
+           for (var j=0; j < station_length; j++) { 
+            // if ( i ==0 ) {
+            //     if(j!=1 && j!=6 && j!=8 && j!=11 && j!=26 && j!=28 && j!=33) {
+             var   station_name = json_timetable_data.trains[i].station_time[j].name;
+              if( station_name!="" ){
+             var   arrival_time = json_timetable_data.trains[i].station_time[j].time_arrival;
+             var   departure_time = json_timetable_data.trains[i].station_time[j].time_departure;
+             var   pass_time = json_timetable_data.trains[i].station_time[j].time_pass;
+           //  var   x1_time = "--:--:--";
+           //  var   x2_time = "--:--:--";
+              if ( arrival_time == "--:--:--" ) {  x2_time = pass_time; }
+                else { x2_time = arrival_time; }
+              var x2_time_array = x2_time.split( ":" );
+   　                  //console.log(station_length , j , station_name );
+          //   jsonQuery('stations[name=station_name].kilo_meter', {
+          //                                        data: json_station_data })
+          //   var   station_kilometer =   SQLike.q({
+          //                                 Select: ['*'],
+          //                                 From: json_station_data,
+          //                                 Where: function(){return this.stations.name = station_name}});
+  
+              for (var k=0; k < 39; k++) {
+                  if ( json_station_data.stations[k].name == station_name ) {
+                      kilo_meter_s = json_station_data.stations[k].kilo_meter;
+                      kilo_meter = parseFloat(kilo_meter_s); }
+                 }
+                   
+            //      console.log(station_length , station_name , kilo_meter); 
+              //  }  
+             //console.log(i , train_name)
+            if (j>0 ) {
+           // var j=0;
+           //   while (line_array[j]!= 9999 && j<200) {
+                 x1 = -50.0 + (parseFloat(x1_time_array[0])-5.0)*100.0 + 100.0*parseFloat(x1_time_array[1])/60.0+
+                            + 100.0*parseFloat(x1_time_array[2])/3600.0;                    
+                 y1 = kilo_meter_save + 25;
+                 x2 = -50.0 + (parseFloat(x2_time_array[0])-5.0)*100.0 + 100.0*parseFloat(x2_time_array[1])/60.0+
+                            + 100.0*parseFloat(x2_time_array[2])/3600.0; 
+                 y2 = kilo_meter + 25;
+            if ( json_timetable_data.trains[i].name.substr(0,3) == "のぞみ" ) { color = 4; } 
+            if ( json_timetable_data.trains[i].name.substr(0,3) == "ひかり" ) { color = 6; }      
+            if ( json_timetable_data.trains[i].name.substr(0,3) == "こだま" ) { color = 8; } 
+            if ( json_timetable_data.trains[i].name.substr(0,3) == "みずほ" ) { color = 10; }      
+            if ( json_timetable_data.trains[i].name.substr(0,3) == "さくら" ) { color = 12; } 
+                
+            //  console.log(json_timetable_data.trains[i].name.substr(0,3));
+
+            var x1_1 = x1 + distanceX;
+            var x2_1 = x2 + distanceX;
+            var y1_1 = y1 + distanceY; 
+            var y2_1 = y2 + distanceY; 
+            var xs1 = 0.0;
+            var xs2 = canvas_text.width;       // alert(xs2);
+            var mx = ((x1_1 + x1_1)- (xs2 + xs1))/ (xs2 -xs1);    
+                mx = mx - 0.5 ;    // alert(mx);
+            var kx = -z *  Math.tan(22.5 / 180 * Math.PI) * canvas_text.width/canvas_text.height ;  
+                                                // if (i==6) { console.log(kx , mx); }
+            var x1_2d =  xs2 * 0.5*mx/kx + xs2/2; 
+
+            var mx = ((x2_1 + x2_1)- (xs2 + xs1))/ (xs2 -xs1);    
+                mx = mx - 0.5 ;    // alert(mx);
+            var kx = -z *  Math.tan(22.5 / 180 * Math.PI) * canvas_text.width/canvas_text.height ;  
+                                                // if (i==6) { console.log(kx , mx); }
+            var x2_2d =  xs2 * 0.5*mx/kx + xs2/2; 
+
+            var ys1 = 0.0;  
+            var ys2 = canvas_text.height;
+            var my = ((y1_1 + y1_1)- (ys2 + ys1))/ (ys2 -ys1);     // alert(my);
+                my = -my; 
+            var ky = -z *  Math.tan(22.5 / 180 * Math.PI);
+            var y1_2d =  -ys2 * 0.5*my/ky + ys2/2;  
+
+            var my = ((y2_1 + y2_1)- (ys2 + ys1))/ (ys2 -ys1);     // alert(my);
+                my = -my; 
+            var ky = -z *  Math.tan(22.5 / 180 * Math.PI);
+            var y2_2d =  -ys2 * 0.5*my/ky + ys2/2;  
+          if ( z > -0.4 ) { drawLine( x1,  y1,  x2,  y2 , color , line_width); } else {
+              if ( ((x1_2d > 100 && x1_2d < xs2) || (x2_2d > 100 && x2_2d < xs2)) && 
+                   ((y1_2d > 20 && y1_2d < ys2)  || (y2_2d > 20  && y2_2d < ys2)) )
+                 { 
+                 drawLine( x1,  y1,  x2,  y2 , color , line_width); 
+                 }
+               }
+              // j=j+4;               
+            }
+           if ( j <  station_length - 1) {
+             var kilo_meter_save = kilo_meter;
+               //console.log(x1_time , x2_time);             
+              if ( departure_time == "--:--:--" ) {  x1_time = pass_time; }
+                else { x1_time = departure_time; }
+                var x1_time_array = x1_time.split( ":" );
+               }
+           
+           } 
+          }
+        }   // END of for (var i=0; i < 650; i++) {
+      
+    if ( z > -0.4 ) {
+                                        //  console.log(canvas_text.width , canvas_text.height , gl.viewportHeight);
+     context.fillStyle = 'black';
+        context.font = "16px sans-serif";
+        context.textAlign = 'left';
+     //   for ( i=0; i < 1; i++) {
+         //console.log(train_length);
+        for ( i=0; i < train_length; i++) {
+           //  train_line (i);
+                 //console.log(   json_timetable_data.trains[i].train_number ); 
+           station_length = json_timetable_data.trains[i].station_time.length;
+           for ( j=0; j < station_length; j++) {  
+                 station_name = json_timetable_data.trains[i].station_time[j].name;
+              if( station_name!="" ){
+                 arrival_time = json_timetable_data.trains[i].station_time[j].time_arrival;
+                 departure_time = json_timetable_data.trains[i].station_time[j].time_departure;
+                 pass_time = json_timetable_data.trains[i].station_time[j].time_pass;
+           
+              if ( arrival_time == "--:--:--" ) {  x2_time = pass_time; }
+                else { x2_time = arrival_time; }
+                 x2_time_array = x2_time.split( ":" );
+   　                
+  
+              for (var k=0; k < 40; k++) {
+                  if ( json_station_data.stations[k].name == station_name ) {
+                      kilo_meter_s = json_station_data.stations[k].kilo_meter;
+                      kilo_meter = parseFloat(kilo_meter_s); }
+                    //  console.log(  kilo_meter );
+                 }
+
+            if (j>0 ) {
+                 x1 = -50.0 + (parseFloat(x1_time_array[0])-5.0)*100.0 + 100.0*parseFloat(x1_time_array[1])/60.0+
+                            + 100.0*parseFloat(x1_time_array[2])/3600.0;                    
+                 y1 = kilo_meter_save + 25;
+                 x2 = -50.0 + (parseFloat(x2_time_array[0])-5.0)*100.0 + 100.0*parseFloat(x2_time_array[1])/60.0+
+                            + 100.0*parseFloat(x2_time_array[2])/3600.0; 
+                 y2 = kilo_meter + 25;
+                            
+                 var train_number = json_timetable_data.trains[i].train_number;
+                 var train_number_pos = train_number.indexOf( "A" );
+                   train_number = parseInt(train_number.substr(0,train_number_pos));
+             //   if ( i<5 ) {
+             //      console.log(  train_number ); }
+                 if ( ( train_number%2 == 1 && y2 == 31.8 ) || ( train_number%2 == 0 && y2 == 25 ) ) {} 
+                   else {
+                   x3 = x1 + (x2 - x1 )/3.0; 
+                   y3 = y1 + (y2 - y1 )/3.0;
+                                 
+                 x3 = x3 + distanceX;
+                 y3 = y3 + distanceY; 
+
+            var xs1 = 0.0;
+            var xs2 = canvas_text.width;       // alert(xs2);
+            var mx = ((x3 + x3)- (xs2 + xs1))/ (xs2 -xs1);    
+                mx = mx - 0.5 ;    // alert(mx);
+            var kx = -z *  Math.tan(22.5 / 180 * Math.PI) * canvas_text.width/canvas_text.height ;  
+                                                // if (i==6) { console.log(kx , mx); }
+               x3 =  xs2 * 0.5*mx/kx + xs2/2; 
+  
+            //  mx = ((x1 + x1)- (xs2 + xs1))/ (xs2 -xs1);    
+            //  mx = mx - 0.5 ;
+            var ys1 = 0.0;  
+            var ys2 = canvas_text.height;
+            var my = ((y3 + y3)- (ys2 + ys1))/ (ys2 -ys1);     // alert(my);
+                my = -my; 
+            var ky = -z *  Math.tan(22.5 / 180 * Math.PI);
+         //    x1 =  xs2 * 0.5*mx/kx + xs2/2;
+             y3 =  -ys2 * 0.5*my/ky + ys2/2;  
+             var theta_1 = Math.atan (y3 / x3) ;
+                                                 //    drawLine( x1,  y1,  x2,  y2 , color , line_width);
+
+                   var xp1 = x1/(xs2 - xs1);         //   alert(xp1);
+                   var xp2 = x2/(xs2 - xs1);         //    alert(xp2);
+                   var yp1 = y1/(ys2 - ys1); 
+                   var yp2 = y2/(ys2 - ys1);         //    alert(yp2); 
+                   var baseLinelength = 0.5;
+        　  var lineLength = Math.sqrt((xp2 - xp1) * (xp2 - xp1) + (yp2 - yp1) * (yp2 - yp1));  
+                                                               //    alert(lineLength);
+        　　var sizeX = lineLength / baseLinelength;            //    alert(sizeX);
+
+           var theta = Math.asin( (yp2 - yp1)/ lineLength);   
+
+
+                 var text = train_number + "A";
+                 //  console.log(text);
+               //  if ( i<5 ) {
+               //    console.log(  text ); }
+             if ( ( x3 > 120 && x3 < xs2 ) && ( y3 > 25 && y3 < ys2 )){
+                                           //   context.fillText(text,x3,y3);    // console.log(text,x3,y3);
+                                           //    if (train_number == 672 ) {         
+                                           //   theta_deg = theta * 180/Math.PI;
+                                           //   theta_1_deg = theta_1 * 180/Math.PI;
+                                           //  console.log(theta_deg , theta_1_deg , j);
+                    var length = Math.sqrt( x3 * x3 + y3 * y3);
+                    var theta_2 =  theta +  theta_1;  
+                    var x_delta = length *  ( Math.cos(theta_1)-  Math.cos(theta_2));
+                    var y_delta = length *  ( Math.sin(theta_1)-  Math.sin(theta_2));
+   
+                context.setTransform(1*Math.cos(theta), 1*Math.sin(theta), 
+                                    -1*Math.sin(theta), 1*Math.cos(theta), x_delta , y_delta)  ; 
+　　　　　　　　　　　　　　　　　　　　　　　　　　//　 text = text+j; 
+　　　　　　　　　 context.fillText(text,x3,y3); 
+                  if ( dblclk_flag ==1) {
+                    if ( (train_number%2 ==0 && (mouse_X_dblclk - x3) <10 && (mouse_X_dblclk - x3) > -20
+                                             && (mouse_Y_dblclk - y3) <10 && (mouse_Y_dblclk - y3) > -70) || 
+                         (train_number%2 ==1 && (mouse_X_dblclk - x3) <20 && (mouse_X_dblclk - x3) > -10
+                                             && (mouse_Y_dblclk - y3) <70 && (mouse_Y_dblclk - y3) > -10)  ) {
+                //            if (train_number%2 ==0 && (mouse_X_dblclk - x3) <20  &&  (mouse_X_dblclk - x3) > 0
+                //                   && (mouse_Y_dblclk - y3) >-200  &&  (mouse_Y_dblclk - y3) <200) ) {
+        //     console.log(i , text,x3,y3 , mouse_X_dblclk , mouse_Y_dblclk , mouse_X_dblclk - x3 , mouse_Y_dblclk -y3);
+                   var canvas_text_2 = document.getElementById("text_canvas_2");
+                   var context_2 = canvas_text_2.getContext('2d');
+                       context_2.fillStyle = 'white';
+                       context_2.fillRect(0,0,256,1024);
+                       context_2.fillStyle = 'black';
+                       context_2.font = "16px sans-serif";
+                       context_2.textAlign = 'left';
+                    
+                   var m = 0;
+                     //   json_timetable_data.trains[i].station_time.length;
+                    context_2.fillText(json_timetable_data.trains[i].name , 30 , 20 );
+                    context_2.fillText(json_timetable_data.trains[i].train_number , 20 , 40 );
+                    context_2.fillText(json_timetable_data.trains[i].train_type , 80 , 40 );
+                    station_length = json_timetable_data.trains[i].station_time.length;
+                          var x5 = 10; 
+                          var x51 = 100;
+                          var x52 = 180; 
+                          var y5 = 60;  
+                       for ( j=0; j < station_length; j++) {
+                       //   var x5 = (j-2- 3* Math.floor( (j-2)/3 ) )*80 + 20;
+                       //   var y5 = Math.floor((j-2)/3)*20 + 120;
+                           y5 = y5 + 20;  
+                         var text = json_timetable_data.trains[i].station_time[j].name;
+                             context_2.fillText(text , x5 , y5 );
+                          text = json_timetable_data.trains[i].station_time[j].time_arrival;
+                 if ( text !="--:--:--" || j==0 ) { context_2.fillText(text , x51 , y5 ); }
+                          text = json_timetable_data.trains[i].station_time[j].time_departure; 
+                 if ( text !="--:--:--" || j==station_length - 1) { context_2.fillText(text , x52 , y5 ); }
+                          text = json_timetable_data.trains[i].station_time[j].time_pass;
+                 if ( text !="--:--:--" && text !=undefined ) { context_2.fillText(text , x51 , y5 ); }
+                      text = json_timetable_data.trains[i].station_time[j].train_pass; 
+                 if ( text !=undefined )  {  y5 = y5 + 20;  context_2.fillText(text , x5 + 20 , y5 ); }     
+                      text = json_timetable_data.trains[i].station_time[j].train_wait_1; 
+             if ( text ==undefined || j==0 ) {} else  {  y5 = y5 + 20;  context_2.fillText(text , x5 + 20 , y5 ); } 
+                      text = json_timetable_data.trains[i].station_time[j].train_wait_time_1; 
+             if ( text ==undefined || j==0 ) {} else {  context_2.fillText(text , x52 , y5 ); }
+                      text = json_timetable_data.trains[i].station_time[j].train_wait_2; 
+             if ( text ==undefined || j==0 ) {} else  {  y5 = y5 + 20;  context_2.fillText(text , x5 + 20 , y5 ); } 
+                      text = json_timetable_data.trains[i].station_time[j].train_wait_time_2; 
+             if ( text ==undefined || j==0 ) {} else {  context_2.fillText(text , x52 , y5 ); }
+                      text = json_timetable_data.trains[i].station_time[j].train_wait_3; 
+             if ( text ==undefined || j==0 ) {} else  {  y5 = y5 + 20;  context_2.fillText(text , x5 + 20 , y5 ); } 
+                      text = json_timetable_data.trains[i].station_time[j].train_wait_time_3; 
+             if ( text ==undefined || j==0 ) {} else {  context_2.fillText(text , x52 , y5 ); }
+                      text = json_timetable_data.trains[i].station_time[j].train_wait_4; 
+             if ( text ==undefined || j==0 ) {} else  {  y5 = y5 + 20;  context_2.fillText(text , x5 + 20 , y5 ); } 
+                      text = json_timetable_data.trains[i].station_time[j].train_wait_time_4; 
+             if ( text ==undefined || j==0 ) {} else {  context_2.fillText(text , x52 , y5 ); }
+                         text = json_timetable_data.trains[i].station_time[j].train_wait_5; 
+             if ( text ==undefined || j==0 ) {} else  {  y5 = y5 + 20;  context_2.fillText(text , x5 + 20 , y5 ); } 
+                      text = json_timetable_data.trains[i].station_time[j].train_wait_time_5; 
+             if ( text ==undefined || j==0 ) {} else {  context_2.fillText(text , x52 , y5 ); }
+                      text = json_timetable_data.trains[i].station_time[j].train_wait_6; 
+             if ( text ==undefined || j==0 ) {} else  {  y5 = y5 + 20;  context_2.fillText(text , x5 + 20 , y5 ); } 
+                      text = json_timetable_data.trains[i].station_time[j].train_wait_time_6; 
+             if ( text ==undefined || j==0 ) {} else {  context_2.fillText(text , x52 , y5 ); }
+                            
+                     }
+                                                             //  context_2.fillText("test", 200 , 900 );
+           //                train_time (i);
+           //        var m = 0;
+           //            while (train_time_array[m]!= 9999 && m<200) {
+           //                if (m==0) {  context_2.fillText(train_time_array[0], 20 , 20 ); }
+           //                if (m==1) {  context_2.fillText(train_time_array[1], 20 , 40 ); }
+           //                if (m>1) {
+           //               var x5 = (m-2- 3* Math.floor( (m-2)/3 ) )*80 + 20;
+           //               var y5 = Math.floor((m-2)/3)*20 + 80;
+           //            context_2.fillText(train_time_array[m], x5 , y5 );
+                                  // console.log( m, x5 , y5 )
+             //                     }
+           //               m = m+1;                        
+             //                           } 
+                                     }
+                            }  //END of   if ( dblclk_flag ==1) {
+                  context.setTransform(1, 0, 0 , 1 , 0 , 0 )  ; 
+                                        
+                   }  // END of  if ( ( x3 > 120 && x3 < xs2 ) && ( y3 > 25 && y3 < ys2 )){
+                }       // END of else                    
+              // j=j+4;               
+             }  
+            if ( j <  station_length - 1) {
+             var kilo_meter_save = kilo_meter;
+               //console.log(x1_time , x2_time);             
+              if ( departure_time == "--:--:--" ) {  x1_time = pass_time; }
+                else { x1_time = departure_time; }
+                var x1_time_array = x1_time.split( ":" );
+               }
+           } 
+         }
+         }   // END of for (var i=0; i < 650; i++) {
+                  dblclk_flag =0;
+    }  // END of  if ( z > -0.4 ) {
+  }  //END of webGL_draw()
+//----------------- webGL_text ------------------------------
+  function webGL_text() { 
+           context.fillStyle = 'white';
+           context.fillRect(0,0,window.innerWidth,25);
+           context.fillRect(0,0,120,window.innerHeight);
+   
+        context.fillStyle = 'blue';
+        context.font = "32px sans-serif";
+        context.textAlign = 'center';
+
+       for (var i=6; i < 25; i++) {
+            x1 = -50 + (i-5)*100;
+            x1 = x1 + distanceX;  
+            var xs1 = 0.0;
+            var xs2 = canvas_text.width;       // alert(xs2);
+            var mx = ((x1 + x1)- (xs2 + xs1))/ (xs2 -xs1);    
+                mx = mx - 0.5 ;    // alert(mx);
+            var kx = -z *  Math.tan(22.5 / 180 * Math.PI) * canvas_text.width/canvas_text.height ;  
+                                                // if (i==6) { console.log(kx , mx); }
+               x1 =  xs2 * 0.5*mx/kx + xs2/2; 
+          if ( x1 > 100 && x1 < xs2 ) {
+               context.fillText( i, x1, 25);
+         } 
+       }    
+
+       if ( z > -0.4 ) {
+        context.font = "22px sans-serif";
+       for (var i=6; i < 24; i++) {
+            var j = 0;
+             for (j=1; j<6; ++j) {
+            x1 = -50 + (i-5)*100+ j*100/6;
+            x1 = x1 + distanceX; 
+            mx = ((x1 + x1)- (xs2 + xs1))/ (xs2 -xs1); 
+            mx = mx -0.5;     
+            x1 =  xs2 * 0.5*mx/kx + xs2/2;  // if (i==6) { x1 }
+              k=j*10; 
+             if ( x1 > 100 && x1 < xs2 ) { 
+           context.fillText(k , x1, 25);
+            }  
+          } 
+        }         
+      }
+        // context.fillText('6', 25, 25);
+           context.font = "16px sans-serif";
+           context.textAlign = 'left'; 
+       for (var k=0; k < 40; k++) {
+            if(k!=1 && k!=6 && k!=8 && k!=11 && k!=26 && k!=28 && k!=33) {
+                  var text = json_station_data.stations[k].name; 
+           //   if( text=="新山口" ) { text="小郡"; } 
+                  text = text + " " + json_station_data.stations[k].telegraph_code; 
+                  kilo_meter_s = json_station_data.stations[k].kilo_meter;
+                  text = text + " " + json_station_data.stations[k].kilo_meter;  
+                  kilo_meter = parseFloat(kilo_meter_s); 
+                  y1 = kilo_meter + 25; 
+                  x1 = 0;
+                    //  console.log(  kilo_meter );
+              y1 = y1 + distanceY; 
+              mx = ((x1 + x1)- (xs2 + xs1))/ (xs2 -xs1);    
+              mx = mx - 0.5 ;
+            var ys1 = 0.0;  
+            var ys2 = gl.viewportHeight;
+            var my = ((y1 + y1)- (ys2 + ys1))/ (ys2 -ys1);     // alert(my);
+                my = -my; 
+            var ky = -z *  Math.tan(22.5 / 180 * Math.PI);
+             y1 =  -ys2 * 0.5*my/ky + ys2/2;            //   if (i<5) { console.log(ky , -my); }
+             y1 = y1 + 6;
+            context.fillText( text , x1, y1);          
+          }
+        if ( z > -1.0 && k<38) {              
+          //  station_text( i );
+            kilo_meter_s = json_station_data.stations[k+1].kilo_meter;
+            var kilo_meter_2 = parseFloat(kilo_meter_s); 
+            y1 = (kilo_meter + kilo_meter_2)/2.0 +  25;
+            var kilo_meter_3 =  kilo_meter_2 - kilo_meter;
+            kilo_meter_3 = kilo_meter_3.toFixed(1);
+            text =  "     " + kilo_meter_3;
+            y1 = y1 + distanceY; 
+            var my = ((y1 + y1)- (ys2 + ys1))/ (ys2 -ys1);     // alert(my);
+                my = -my; 
+            var ky = -z *  Math.tan(22.5 / 180 * Math.PI);
+               y1 =  -ys2 * 0.5*my/ky + ys2/2;            //   if (i<5) { console.log(ky , -my); }
+                                                          //  y1 = y1 + 6;
+        //    context.fillText( text , x1, y1);
+           } 
+         } 
+   }
+
+//-------------------------------------------------------------	      
+   // Canvasサイズをコンテナの100%に
+	function setCanvasSize() {
+            canvas.width = window.innerWidth;
+　　　　　　　canvas.height = window.innerHeight;             // alert(canvas.height);
+	    }
+//--------------- webGLProgram() -----------------------
+function webGLProgram() {
+  station_data();
+  timetable_data();
+  webGLStart();
+  webGL_draw();
+  webGL_text();
+}
+
+function jump_1() {
+   location.href = "./chart_2.html";
+ } 
+
+function jump_2() {
+   location.href = "./chart_3.html";
+ } 
+
+function jump_5() {
+ var canvas_text_2 = document.getElementById("text_canvas_2");
+ var context_2 = canvas_text_2.getContext('2d');
+ context_2.clearRect(0,0,256,1024);
+ webGL_draw();
+ webGL_text();
+}
+</script>
+<link rel="shortcut icon" href="./favicon.ico" /> 
+</head>
+
+<body onload="webGLProgram();">
+<table  border="0"><tbody><tr>
+    <td>東海道・山陽新幹線列車運行図表　S.50 03/10</td> 
+ <td><form>
+ <div style="padding:0px 20px 0px 30px; ">
+   <input type="button" name="link" style="padding:10px 20px 10px 20px; font-weight:bold; font:30pt;"
+    value="下りのみ" onclick="jump_1()"/></div>
+   </form></td>
+<td><form>
+<div style="padding:0px 20px 0px 20px;">
+   <input type="button" name="link" style="padding:10px 20px 10px 20px; font-weight:bold; font:30pt;"
+   value="上りのみ" onclick="jump_2()"/></div>
+   </form></td>
+<td width=300></td>
+<td><form>
+<div style="padding:0px 0px 0px 40px;">
+   <input type="button" name="link" style="padding:5px 20px 5px 20px; font-weight:bold; font:30pt;"
+   value="時刻表を消す" onclick="jump_5()"/></div>
+   </form></td>     
+</tr>
+</tbody></table>
+     
+    <div id="canvasContainer">
+ 
+      <canvas style='position: absolute' id="diagram_01-canvas" ></canvas>
+
+      <canvas style='position: absolute' id="text_canvas" ></canvas>
+      <canvas id="text_canvas_2" style="position:absolute; right:0px; " width="256" height="1024"></canvas>
+　　</div>
+
+</body>
+
+</html>
+
